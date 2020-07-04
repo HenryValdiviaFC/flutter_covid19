@@ -1,73 +1,12 @@
   import 'package:flutter/material.dart';
   import 'dart:async';
-  import 'dart:convert';
   import 'package:http/http.dart' as http;
+  import 'package:provider/provider.dart';
   import 'package:flutter_covid19/models/country.dart';
   import 'package:flutter_covid19/models/statistics.dart';
-
-  Future<List<Country>> allCountries(http.Client client) async{
-      
-      final response =
-      await client.get(
-        'https://coronavirus-19-api.herokuapp.com/countries'
-        );
-
-      print(response.statusCode);
-
-      if(response.statusCode == 200){
-          print(response.body);
-          final parsed = json.decode(response.body).cast<Map<String, dynamic>>();
-          List<Country> countries = parsed.map<Country>((json) => Country.fromJson(json)).toList();
-          
-          if(countries.length > 0)
-           countries.removeAt(0);
-
-          return countries;
-      }
-
-      else{
-        throw Exception('Error: No se cargaron los paises');
-      }
-  }
-
-  
-  Future<Country> findCountry(String title) async {
-  
-  final response = await http.get(
-    'https://coronavirus-19-api.herokuapp.com/countries/'+title   
-    );
-
-    print('Busqueda - '+response.statusCode.toString());
-
-    if (response.statusCode == 200) {  
-      print("Busqueda - Exito body");
-      print(response.body);
-      return Country.fromJson(json.decode(response.body));
-    }
-  
-    else {
-      throw Exception('Failed to search country');
-    } 
- }
-
-  Future<Statistics> findStatistics() async{
-    final response = await http.get(
-    'https://coronavirus-19-api.herokuapp.com/all'   
-    );
-
-    print('Statistics - '+response.statusCode.toString());
-
-    if (response.statusCode == 200) {  
-      print("Statistics - Exito body");
-      print(response.body);
-      return Statistics.fromJson(json.decode(response.body));
-    }
-  
-    else {
-      throw Exception('Failed to search country');
-    } 
-
-  }
+  import 'package:flutter_covid19/data/moor_database.dart';
+  import 'package:flutter_covid19/data/country_http.dart';
+  import 'package:flutter_covid19/data/statistics_http.dart';
 
 	void main() {
 	  runApp(MyApp());
@@ -77,11 +16,18 @@
 	  // This widget is the root of your application.
 	  @override
 	  Widget build(BuildContext context) {
-		return MaterialApp(
+		return MultiProvider(
+      providers: [
+        Provider(create: (_) => Database()),
+        Provider(create: (_) => CountryHTTP()),
+        Provider(create: (_) => StatisticsHTTP())
+      ],
+      child: MaterialApp(
 		  title: 'Flutter Demo',
 		  home: MyHomePage(),
 		  debugShowCheckedModeBanner: false,
-		);
+		)); 
+    
 	  }
 	}
 
@@ -99,14 +45,20 @@
      Icon visibleIcon = Icon(Icons.search);
 	   Widget searchBar= Text('Barra de búsqueda');
      Statistics stats;
-
+     int _selectedIndex;
 
     @override
     void initState() {
-      _initList();
-      _initStats();
+      _selectedIndex = 0;
       super.initState();
     }	
+
+  @override
+  void didChangeDependencies() {
+      _initList(this.context);
+      _initStats();
+    super.didChangeDependencies();
+  }
 
 	  @override
 	  Widget build(BuildContext context) {
@@ -127,7 +79,7 @@
                       fontSize: 20.0,
                     ),
                     onSubmitted: (String text){
-                      _search(text);
+                      _search(text,context);
                     },
                   );
               }
@@ -136,16 +88,77 @@
                  this.visibleIcon = Icon(Icons.search);
                  this.searchBar = Text('Barra de búsqueda');
                  //Listamos los datos por defecto
-                 _initList();
+                 _initList(context);
               }
             });
           },
         )
       ],
 		  ),
-		  body: 
+		  body: _buildBody(context),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        selectedItemColor: Colors.blueAccent,
+        onTap: (int index){
+            setState(() {
+              _selectedIndex = index;
+            });
+        },
+        items: const <BottomNavigationBarItem>[
+          BottomNavigationBarItem(
+          icon: Icon(Icons.home),
+          title: Text('Home'),
+          ),
+          BottomNavigationBarItem(
+          icon: Icon(Icons.favorite),
+          title: Text('Favourite'),
+          ),
+        ],
+      ), 
+		);
+	  }
+
+    Future _initList(BuildContext context) async{    
+    final httpCountry = Provider.of<CountryHTTP>(context);
+    print("List Init");
+    countries = List();
+    List<Country> temp = await httpCountry.allCountries(http.Client());
+    print("After getList");
+    setState(() {
+      countries = temp;
+      print('setState-list');  
+    });
+      print("Countries size init: "+countries.length.toString());
+    }
+
+    Future _search(String text,BuildContext context) async{
+    final httpCountry = Provider.of<CountryHTTP>(context);
+    print("Busqueda init");
+    Country searchTemp = await httpCountry.findCountry(text); 
+    setState(() {
+      countries = List();
+      countries.add(searchTemp);
+    });
+  }
+
+    Future _initStats() async{
+    final http = Provider.of<StatisticsHTTP>(context);
+    print("init stats");
+    stats = Statistics();
+    Statistics statsTemp = await http.findStatistics(); 
+    print("After getStats");
+    setState(() {
+      stats = statsTemp;
+      print('setState-Statistics');
+    });
+  }
+    
+    Widget _buildBody(BuildContext context){
       
-      Column(
+      final database = Provider.of<Database>(context);
+
+      if(_selectedIndex == 0){
+        return Column(
         children: [
               Container(
             margin: const EdgeInsets.only(top: 10.0, bottom: 10.0),
@@ -159,46 +172,29 @@
           ),
           SizedBox(height: 8.0),
           Expanded(
-              child: _CountryList(countries: countries)
+              child: _CountryList(countries: countries,database: database)
             )
             
         ],
-      ) 
-		);
-	  }
+      );
+    } 
+      else{
+        return StreamBuilder(
+            stream: database.watchAllCountries,
+            builder: (context, AsyncSnapshot <List<CountryDB>> snapshot){
+              final countriesDB = snapshot.data ?? List();
+              
+              if(countriesDB.length == 0)
+              return Center(
+                child: Text('Sin favoritos'),
+              );
+              return _FavouriteList(favourites: countriesDB,database: database);           
+            }
+          );
+      }
 
-    Future _initList() async{
-    print("List Init");
-    countries = List();
-    List<Country> temp = await allCountries(http.Client());
-    print("After getList");
-    setState(() {
-      countries = temp;
-      print('setState-list');  
-    });
-      print("Countries size init: "+countries.length.toString());
     }
 
-    Future _search(String text) async{
-    print("Busqueda init");
-    Country searchTemp = await findCountry(text); 
-    setState(() {
-      countries = List();
-      countries.add(searchTemp);
-    });
-  }
-
-    Future _initStats() async{
-    print("init stats");
-    stats = Statistics();
-    Statistics statsTemp = await findStatistics(); 
-    print("After getStats");
-    setState(() {
-      stats = statsTemp;
-      print('setState-Statistics');
-    });
-  }
-    
     Widget _buildStatCard(String title,int number,Color color){
        
 
@@ -243,8 +239,9 @@
 
   class _CountryList extends StatelessWidget{
     final List<Country> countries;
-        
-    _CountryList({Key key,this.countries}): super(key:key);
+    final Database database;
+
+    _CountryList({Key key,this.countries,this.database}): super(key:key);
 
     @override
     Widget build(BuildContext context) {
@@ -252,12 +249,93 @@
          padding: const EdgeInsets.all(16.0),
          itemCount: countries.length,
          itemBuilder: (context, index) {
-        return _buildRow(countries[index]);
+        return _buildRow(countries[index],context);
         },
       );
     }
 
-    Widget _buildRow(Country country){
+    Widget _buildRow(Country country,BuildContext context){
+         
+         final countryDB = CountryDB(
+            country: country.country,
+            cases: country.cases,
+            todayCases: country.todayCases,
+            deaths: country.deaths,
+            todayDeaths: country.todayDeaths,
+            recovered: country.recovered,
+            active: country.active,
+            critical: country.critical,
+            casesPerOneMillion: country.casesPerOneMillion,
+            deathsPerOneMillion: country.deathsPerOneMillion,
+            totalTests: country.totalTests,
+            testsPerOneMillion: country.testsPerOneMillion
+            );
+
+         return StreamBuilder(
+            stream: database.getCountry(countryDB.country),
+            builder: (context, AsyncSnapshot <CountryDB> snapshot){      
+              final snapshotDB = snapshot.data ?? null;
+              return Card(
+                elevation: 2.0,
+                child: Padding(
+                padding: EdgeInsets.only(bottom: 15.0,top: 15.0),
+                child: ListTile(
+                leading: Image.asset('assets/world.png'),
+                title: Text(
+                country.country
+                ),
+                subtitle:           
+                Text('Cases: '+country.cases.toString()+" | "+"Today: "+country.todayCases.toString()+" | "+"Active: "+country.active.toString()+
+                "\n"+"Deaths: "+country.deaths.toString()+" | "+"Today: "+country.todayDeaths.toString()+
+                "\n"+"Recovered: "+country.recovered.toString()+" | "+" Critical: "+country.critical.toString()),
+                trailing: 
+                IconButton(
+                icon: Icon(snapshotDB== null?Icons.favorite_border:Icons.favorite),
+                onPressed: (){
+                  database.addCountry(countryDB)
+                  .then(
+                    (value) => 
+                      Scaffold.of(context).showSnackBar(
+                        SnackBar(content: Text(country.country+' registrado como favorito'))
+                        )
+                    )
+                  .catchError(
+                    (e) =>
+                      Scaffold.of(context).showSnackBar(
+                        SnackBar(content: Text('Elemento ya se encuentra en la lista de favoritos'))
+                        )
+                    );
+                },
+                )
+              ),
+              ),
+              );           
+            }
+          );
+    }
+
+  }
+ 
+
+  class _FavouriteList extends StatelessWidget{
+    
+    final List<CountryDB> favourites;
+    final Database database;
+
+    _FavouriteList({Key key,this.favourites,this.database}): super(key:key);
+
+    @override
+    Widget build(BuildContext context) {
+      return ListView.builder(
+         padding: const EdgeInsets.all(16.0),
+         itemCount: favourites.length,
+         itemBuilder: (context, index) {
+        return _buildRow(favourites[index],context);
+        },
+      );
+    }
+
+    Widget _buildRow(CountryDB country,BuildContext context){
         return Card(
         elevation: 2.0,
         child: Padding(
@@ -273,8 +351,23 @@
         "\n"+"Recovered: "+country.recovered.toString()+" | "+" Critical: "+country.critical.toString()),
         trailing: 
         IconButton(
-        icon: Icon(Icons.add_circle),
-        onPressed: (){},
+        icon: Icon(Icons.delete),
+        onPressed: (){
+          print("Borrando de la BD");
+          database.deleteCountry(country)
+          .then(
+            (value) => 
+              Scaffold.of(context).showSnackBar(
+                SnackBar(content: Text('Se elimina '+country.country+' de favoritos'))
+              )
+            )
+          .catchError(
+            (e) => 
+              Scaffold.of(context).showSnackBar(
+                SnackBar(content: Text('Error, nose pudo eliminar de la lista de favoritos'))
+              )
+            );
+        },
         )
       ),
       ),
@@ -282,4 +375,3 @@
     }
 
   }
- 
